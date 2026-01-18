@@ -72,9 +72,7 @@ def fetch_search_trend(keyword):
         else:
             st.error(f"데이터랩 API 호출 실패: {response.status_code} - {response.text}")
             return None
-        else:
-            st.error(f"데이터랩 API 호출 실패: {response.status_code}")
-            return None
+
     except Exception as e:
         st.error(f"에러 발생: {e}")
         return None
