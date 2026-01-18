@@ -1,218 +1,196 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+import requests
 import os
-from datetime import datetime
+from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
-# 페이지 설정
+# 1. 인증 정보 로드 (하이브리드 패턴)
+load_dotenv()
+
+def get_naver_credentials():
+    # Streamlit Secrets 우선 확인 (try-except로 파일 부재 시 예외 처리)
+    try:
+        if "NAVER_CLIENT_ID" in st.secrets:
+            return st.secrets["NAVER_CLIENT_ID"], st.secrets["NAVER_CLIENT_SECRET"]
+    except:
+        pass # secrets.toml 파일이 없으면 무시하고 환경 변수 확인으로 넘어감
+    
+    # OS 환경 변수 확인
+    client_id = os.getenv("NAVER_CLIENT_ID")
+    client_secret = os.getenv("NAVER_CLIENT_SECRET")
+    
+    return client_id, client_secret
+
+CLIENT_ID, CLIENT_SECRET = get_naver_credentials()
+
+# 2. 페이지 설정
 st.set_page_config(
-    page_title="건강기능식품 트렌드 분석 대시보드",
-    page_icon="💊",
+    page_title="범용 네이버 트렌드 대시보드",
+    page_icon="🔍",
     layout="wide"
 )
 
-# 데이터 로드 함수
-@st.cache_data
-def load_data():
-    data_dir = "data"
-    keywords = ["오메가3", "루테인", "프로바이오틱스", "마그네슘", "밀크씨슬", "유산균"]
+# 2.1 진단 및 디버깅 사이드바
+with st.sidebar.expander("🛠️ 시스템 진단 정보", expanded=False):
+    st.markdown("### API 키 설정 확인")
+    if CLIENT_ID:
+        st.success(f"Client ID: {CLIENT_ID[:3]}*** (설정됨)")
+    else:
+        st.error("Client ID: 미설정 ❌")
+        
+    if CLIENT_SECRET:
+        st.success(f"Client Secret: {CLIENT_SECRET[:3]}*** (설정됨)")
+    else:
+        st.error("Client Secret: 미설정 ❌")
+        
+    st.markdown("---")
+    st.caption("Streamlit Cloud에서 실행 중이라면 Secrets 설정을 확인하세요.")
+
+# 3. API 호출 함수들
+def fetch_search_trend(keyword):
+    url = "https://openapi.naver.com/v1/datalab/search"
+    headers = {
+        "X-Naver-Client-Id": CLIENT_ID,
+        "X-Naver-Client-Secret": CLIENT_SECRET,
+        "Content-Type": "application/json"
+    }
     
-    trend_dfs = {}
-    blog_dfs = {}
-    shopping_dfs = {}
+    # 최근 1년 데이터 조회
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
     
-    for kw in keywords:
-        # 트렌드 데이터
-        trend_file = f"2025_shopping_trend_{kw}_20260117.csv"
-        trend_path = os.path.join(data_dir, trend_file)
-        if os.path.exists(trend_path):
-            df = pd.read_csv(trend_path)
+    # 검색어 유효성 검사
+    if not keyword or not keyword.strip():
+        return None
+
+    body = {
+        "startDate": start_date,
+        "endDate": end_date,
+        "timeUnit": "date",
+        "keywordGroups": [
+            {"groupName": keyword, "keywords": [keyword]}
+        ]
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=body)
+        if response.status_code == 200:
+            data = response.json()
+            if not data.get('results'):
+                 return pd.DataFrame(columns=['period', 'ratio'])
+            
+            results = data['results'][0]['data']
+            df = pd.DataFrame(results)
             df['period'] = pd.to_datetime(df['period'])
-            df['keyword'] = kw
-            trend_dfs[kw] = df
-            
-        # 블로그 데이터
-        blog_file = f"2026_blog_search_{kw}_20260117.csv"
-        blog_path = os.path.join(data_dir, blog_file)
-        if os.path.exists(blog_path):
-            blog_dfs[kw] = pd.read_csv(blog_path)
-            
-        # 쇼핑 검색 데이터
-        shop_file = f"2026_shopping_search_{kw}_20260117.csv"
-        shop_path = os.path.join(data_dir, shop_file)
-        if os.path.exists(shop_path):
-            shopping_dfs[kw] = pd.read_csv(shop_path)
-            
-    return trend_dfs, blog_dfs, shopping_dfs
+            return df
+        else:
+            st.error(f"데이터랩 API 호출 실패: {response.status_code} - {response.text}")
+            return None
+        else:
+            st.error(f"데이터랩 API 호출 실패: {response.status_code}")
+            return None
+    except Exception as e:
+        st.error(f"에러 발생: {e}")
+        return None
 
-# 메인 타이틀
-st.title("💊 건강기능식품 트렌드 분석 대시보드")
-st.markdown("네이버 쇼핑 인사이트 및 검색 데이터를 기반으로 한 트렌드 비교 분석 도구입니다.")
+def fetch_blog_search(keyword):
+    url = "https://openapi.naver.com/v1/search/blog"
+    headers = {
+        "X-Naver-Client-Id": CLIENT_ID,
+        "X-Naver-Client-Secret": CLIENT_SECRET
+    }
+    params = {"query": keyword, "display": 10, "sort": "sim"}
+    
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code == 200:
+            return pd.DataFrame(response.json()['items'])
+        else:
+            st.error(f"블로그 검색 API 오류: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        st.error(f"블로그 검색 연결 오류: {e}")
+        return None
 
-# 데이터 불러오기
-trend_data, blog_data, shop_data = load_data()
-all_keywords = list(trend_data.keys())
+def fetch_shopping_search(keyword):
+    url = "https://openapi.naver.com/v1/search/shop"
+    headers = {
+        "X-Naver-Client-Id": CLIENT_ID,
+        "X-Naver-Client-Secret": CLIENT_SECRET
+    }
+    params = {"query": keyword, "display": 10, "sort": "sim"}
+    
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code == 200:
+            return pd.DataFrame(response.json()['items'])
+        else:
+            st.error(f"쇼핑 검색 API 오류: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        st.error(f"쇼핑 검색 연결 오류: {e}")
+        return None
 
-# 사이드바 설정
-st.sidebar.header("🔍 분석 설정")
-selected_keywords = st.sidebar.multiselect(
-    "비교할 키워드를 선택하세요",
-    all_keywords,
-    default=all_keywords[:3]
-)
+# 4. 메인 UI
+st.title("🚀 범용 네이버 API 트렌드 대시보드")
+st.markdown("하나의 검색어로 트렌드, 블로그, 쇼핑 데이터를 즉시 분석합니다.")
 
-if not selected_keywords:
-    st.error("최소 하나 이상의 키워드를 선택해주세요.")
+# 사이드바 검색
+st.sidebar.header("🔍 검색 설정")
+search_keyword = st.sidebar.text_input("검색어를 입력하세요", placeholder="예: 오메가3, 전기자전거 등")
+
+if not CLIENT_ID or not CLIENT_SECRET:
+    st.error("⚠️ API 키가 설정되지 않았습니다. .env 파일이나 Streamlit Secrets를 확인하세요.")
     st.stop()
 
-# 탭 구성
-tab1, tab2, tab3 = st.tabs(["📊 트렌드 비교", "🔍 키워드 상세 EDA", "💾 원본 데이터"])
-
-# --- Tab 1: 트렌드 비교 ---
-with tab1:
-    st.header("📈 키워드별 쇼핑 클릭 트렌드 비교")
+if search_keyword:
+    with st.spinner(f"'{search_keyword}' 데이터 수집 중..."):
+        trend_df = fetch_search_trend(search_keyword)
+        blog_df = fetch_blog_search(search_keyword)
+        shop_df = fetch_shopping_search(search_keyword)
     
-    # 선택된 키워드 데이터 병합
-    combined_trend = pd.concat([trend_data[kw] for kw in selected_keywords])
-    
-    # 그래프 1: 일별 클릭 트렌드 (Line Chart)
-    fig_line = px.line(
-        combined_trend, 
-        x='period', 
-        y='ratio', 
-        color='keyword',
-        title="일별 클릭 트렌드 변화 (2025년)",
-        template="plotly_dark"
-    )
-    st.plotly_chart(fig_line, use_container_width=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # 그래프 2: 키워드별 총 클릭량 (Bar Chart)
-        total_clicks = combined_trend.groupby('keyword')['ratio'].sum().reset_index()
-        fig_bar = px.bar(
-            total_clicks, 
-            x='keyword', 
-            y='ratio', 
-            color='keyword',
-            title="키워드별 누적 클릭 지수 합계",
-            template="plotly_dark"
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
+    if trend_df is not None:
+        tab1, tab2, tab3 = st.tabs(["📊 트렌드 분석", "🔍 상세 검색 결과", "📈 기초 EDA"])
         
-        # 표 1: 요약 통계량
-        st.subheader("📋 키워드별 요약 통계")
-        stats_df = combined_trend.groupby('keyword')['ratio'].describe().T
-        st.dataframe(stats_df, use_container_width=True)
+        with tab1:
+            st.subheader(f"📈 '{search_keyword}' 쇼핑 클릭 트렌드 (최근 1년)")
+            fig = px.line(trend_df, x='period', y='ratio', title=f"{search_keyword} 일별 클릭 추이", template="plotly_dark")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("최고 클릭 지수", f"{trend_df['ratio'].max():.2f}")
+            with col2:
+                st.metric("평균 클릭 지수", f"{trend_df['ratio'].mean():.2f}")
 
-    with col2:
-        # 그래프 3: 클릭량 분포 (Box Plot)
-        fig_box = px.box(
-            combined_trend, 
-            x='keyword', 
-            y='ratio', 
-            color='keyword',
-            title="키워드별 클릭 지수 분포 및 이상치",
-            template="plotly_dark"
-        )
-        st.plotly_chart(fig_box, use_container_width=True)
-        
-        # 표 2: 전월 대비 성장률 (MoM) - 간소화 버전
-        st.subheader("📈 월간 평균 클릭 지수 변화")
-        combined_trend['month'] = combined_trend['period'].dt.month
-        monthly_avg = combined_trend.groupby(['keyword', 'month'])['ratio'].mean().unstack().T
-        st.dataframe(monthly_avg, use_container_width=True)
+        with tab2:
+            st.subheader("📝 관련 블로그 및 쇼핑 상품")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("#### 인기 블로그")
+                if blog_df is not None and not blog_df.empty:
+                    for idx, row in blog_df.iterrows():
+                        st.markdown(f"- [{row['title']}]({row['link']})")
+                else:
+                    st.write("블로그 데이터가 없습니다.")
+            with c2:
+                st.markdown("#### 추천 쇼핑 상품")
+                if shop_df is not None and not shop_df.empty:
+                    for idx, row in shop_df.iterrows():
+                        price = format(int(row['lprice']), ',')
+                        st.markdown(f"- **{row['title']}** : {price}원")
+                else:
+                    st.write("쇼핑 데이터가 없습니다.")
 
-    # 그래프 4: 요일별 클릭 패턴 (Heatmap)
-    combined_trend['day_of_week'] = combined_trend['period'].dt.day_name()
-    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    weekly_pattern = combined_trend.groupby(['keyword', 'day_of_week'])['ratio'].mean().reset_index()
-    
-    fig_heatmap = px.density_heatmap(
-        weekly_pattern,
-        x='day_of_week',
-        y='keyword',
-        z='ratio',
-        category_orders={'day_of_week': day_order},
-        title="요일별/키워드별 평균 클릭 강도",
-        template="plotly_dark"
-    )
-    st.plotly_chart(fig_heatmap, use_container_width=True)
-
-# --- Tab 2: 키워드 상세 EDA ---
-with tab2:
-    st.header("🔎 개별 키워드 심층 분석")
-    
-    detail_kw = st.selectbox("분석할 키워드를 선택하세요", selected_keywords)
-    
-    col3, col4 = st.columns(2)
-    
-    with col3:
-        # 그래프 5: 월별 클릭 추이 (Area Chart)
-        kw_trend = trend_data[detail_kw].copy()
-        kw_trend['month'] = kw_trend['period'].dt.to_period('M').astype(str)
-        monthly_trend = kw_trend.groupby('month')['ratio'].mean().reset_index()
-        fig_area = px.area(
-            monthly_trend, 
-            x='month', 
-            y='ratio', 
-            title=f"[{detail_kw}] 월별 평균 클릭 추이",
-            template="plotly_dark"
-        )
-        st.plotly_chart(fig_area, use_container_width=True)
-        
-        # 표 3: 상위 블로그 검색 결과
-        st.subheader(f"📝 {detail_kw} 인기 블로그 (상위 10)")
-        if detail_kw in blog_data:
-            st.dataframe(blog_data[detail_kw][['title', 'bloggername', 'postdate']], use_container_width=True)
-        else:
-            st.info("블로그 데이터가 없습니다.")
-
-    with col4:
-        # 그래프 6: 히스토그램 (Distribution)
-        fig_hist = px.histogram(
-            kw_trend, 
-            x='ratio', 
-            nbins=30,
-            title=f"[{detail_kw}] 클릭 지수 빈도 분포",
-            template="plotly_dark"
-        )
-        st.plotly_chart(fig_hist, use_container_width=True)
-        
-        # 표 4: 상위 쇼핑 검색 결과
-        st.subheader(f"🛒 {detail_kw} 네이버 쇼핑 상위 상품")
-        if detail_kw in shop_data:
-            st.dataframe(shop_data[detail_kw][['title', 'lprice', 'mallName']], use_container_width=True)
-        else:
-            st.info("쇼핑 데이터가 없습니다.")
-
-    # 표 5: 데이터 무결성 체크
-    st.subheader("🛡️ 데이터 품질 리포트")
-    quality_info = {
-        "총 데이터 수": len(kw_trend),
-        "결측치 수": kw_trend['ratio'].isnull().sum(),
-        "시작일": kw_trend['period'].min().strftime('%Y-%m-%d'),
-        "종료일": kw_trend['period'].max().strftime('%Y-%m-%d'),
-        "최대 클릭 지수": kw_trend['ratio'].max()
-    }
-    st.table(pd.DataFrame([quality_info]))
-
-# --- Tab 3: 원본 데이터 ---
-with tab3:
-    st.header("🗄️ 수집 데이터 원본 확인")
-    
-    view_kw = st.radio("데이터를 확인할 키워드 선택", selected_keywords, horizontal=True)
-    
-    st.subheader(f"[{view_kw}] 쇼핑 트렌드 Raw Data")
-    st.dataframe(trend_data[view_kw], use_container_width=True)
-    
-    # 다운로드 버튼
-    csv = trend_data[view_kw].to_csv(index=False).encode('utf-8-sig')
-    st.download_button(
-        label=f"{view_kw} 데이터 CSV 다운로드",
-        data=csv,
-        file_name=f"{view_kw}_trend_2025.csv",
-        mime='text/csv',
-    )
+        with tab3:
+            st.subheader("📋 데이터 요약 통계")
+            st.dataframe(trend_df.describe().T, use_container_width=True)
+            
+            st.subheader("📅 최근 7일 데이터")
+            st.table(trend_df.tail(7))
+    else:
+        st.warning("데이터를 불러오지 못했습니다. 검색어나 API 설정을 확인하세요.")
+else:
+    st.info("왼쪽 사이드바에서 검색어를 입력하여 분석을 시작하세요.")
